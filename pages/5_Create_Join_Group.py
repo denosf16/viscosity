@@ -79,6 +79,7 @@ with tab1:
         st.session_state["active_group_id"] = group_id
         st.session_state["group_name"] = group_name.strip()
         st.session_state["member_id"] = member_id
+        st.session_state["display_name"] = display_name.strip()
 
         st.success(f"Group created! Join Code: {join_code}")
         st.rerun()
@@ -146,6 +147,7 @@ with tab2:
         st.session_state["active_group_id"] = group_id
         st.session_state["group_name"] = group["name"]
         st.session_state["member_id"] = member_id
+        st.session_state["display_name"] = display_name_join.strip()
 
         st.success("Joined successfully!")
         st.rerun()
