@@ -7,8 +7,8 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-from lib.ui import apply_speakeasy_theme, card
 from lib.device_token import get_or_create_device_token
+from lib.ui import apply_speakeasy_theme, card
 
 
 # ============================================================
@@ -39,6 +39,16 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
+def _reset_filters():
+    # Keep scope as-is; reset everything else to sane defaults.
+    st.session_state["rk_search_text"] = ""
+    st.session_state["rk_window_choice"] = "All time"
+    st.session_state["rk_min_pours"] = 1
+    st.session_state["rk_limit_n"] = 50
+    st.session_state["rk_category_filter"] = "All"
+    st.session_state["rk_mashbill_filter"] = "All"
+
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -55,15 +65,16 @@ else:
 # UI
 # ============================================================
 st.title("Rankings 🏆")
-st.caption("Statistical summary of rated pours. Global by default.")
+st.caption("A statistical summary of rated pours. Global by default.")
 st.divider()
+
 
 # ============================================================
 # CONTROLS
 # ============================================================
 st.subheader("Controls")
 
-c0, c1, c2, c3, c4 = st.columns([1.2, 2, 1, 1, 1])
+c0, c1, c2, c3, c4, c5 = st.columns([1.2, 2.2, 1.2, 1.2, 1.1, 1.2])
 
 with c0:
     scope = st.radio(
@@ -71,29 +82,51 @@ with c0:
         ["Global", "My Stats"],
         horizontal=True,
         index=0,
-        help="Global ranks all rated pours. My Stats ranks only your pours on this device.",
+        key="rk_scope",
+        help="My Stats ranks only your pours on this device.",
     )
 
 with c1:
-    search_text = st.text_input("Search", placeholder="Type brand or expression...")
+    search_text = st.text_input(
+        "Search",
+        placeholder="Type brand or expression...",
+        key="rk_search_text",
+    )
 
 with c2:
     window_choice = st.selectbox(
         "Time window",
         ["All time", "Last 7 days", "Last 30 days", "Last 90 days"],
-        index=1,
+        index=0,  # <-- SANE DEFAULT
+        key="rk_window_choice",
     )
 
 with c3:
-    min_pours = st.number_input("Min rated pours", min_value=1, max_value=100, value=3, step=1)
+    min_pours = st.number_input(
+        "Min rated pours",
+        min_value=1,
+        max_value=100,
+        value=1,  # <-- SANE DEFAULT
+        step=1,
+        key="rk_min_pours",
+    )
 
 with c4:
-    limit_n = st.number_input("Show top", min_value=10, max_value=200, value=50, step=10)
+    limit_n = st.number_input(
+        "Show top",
+        min_value=10,
+        max_value=200,
+        value=50,
+        step=10,
+        key="rk_limit_n",
+    )
 
-time_min_iso = None
-if window_choice != "All time":
-    days = {"Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90}[window_choice]
-    time_min_iso = _iso(_utc_now() - timedelta(days=days))
+with c5:
+    st.caption("")
+    if st.button("Reset filters", key="rk_reset_btn"):
+        _reset_filters()
+        st.rerun()
+
 
 # Guardrail: My Stats requires identity (otherwise it's empty and confusing)
 if scope == "My Stats" and not display_name:
@@ -104,12 +137,16 @@ if scope == "My Stats" and not display_name:
     )
     st.stop()
 
+
+time_min_iso = None
+if window_choice != "All time":
+    days = {"Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90}[window_choice]
+    time_min_iso = _iso(_utc_now() - timedelta(days=days))
+
+
 # ============================================================
 # LOAD EVENTS (rated pours only)
 # ============================================================
-st.divider()
-st.subheader("Loading rated pours")
-
 q = (
     sb.table("events")
     .select("bottle_id, rating, created_at, author_device_token")
@@ -138,6 +175,7 @@ if events_df.empty:
     card("Nothing to rank yet", "No valid numeric ratings found.")
     st.stop()
 
+
 # ============================================================
 # LOAD BOTTLES METADATA
 # ============================================================
@@ -157,6 +195,7 @@ if not bottles_rows:
 
 bottles_df = pd.DataFrame(bottles_rows)
 
+
 # ============================================================
 # AGGREGATE
 # ============================================================
@@ -174,29 +213,41 @@ df["label"] = df.apply(lambda x: bottle_label(x.get("brand"), x.get("expression"
 df["avg_rating"] = df["avg_rating"].astype(float)
 df["rating_count"] = df["rating_count"].astype(int)
 
+
 # ============================================================
-# FILTERS
+# MORE FILTERS (tucked away)
 # ============================================================
-st.subheader("Filters")
+with st.expander("More filters", expanded=False):
+    f1, f2 = st.columns([1, 1])
 
-left, mid, right = st.columns([2, 2, 1])
+    with f1:
+        categories = sorted([c for c in df["category"].dropna().unique().tolist() if str(c).strip()])
+        category_filter = st.selectbox(
+            "Category",
+            ["All"] + categories,
+            key="rk_category_filter",
+        )
 
-with left:
-    categories = sorted([c for c in df["category"].dropna().unique().tolist() if str(c).strip()])
-    category_filter = st.selectbox("Category", ["All"] + categories)
+    with f2:
+        styles = sorted([c for c in df["mashbill_style"].dropna().unique().tolist() if str(c).strip()])
+        mashbill_filter = st.selectbox(
+            "Mashbill Style",
+            ["All"] + styles,
+            key="rk_mashbill_filter",
+        )
 
-with mid:
-    styles = sorted([c for c in df["mashbill_style"].dropna().unique().tolist() if str(c).strip()])
-    mashbill_filter = st.selectbox("Mashbill Style", ["All"] + styles)
 
-with right:
-    st.caption("Min rated pours is set above.")
-
+# ============================================================
+# APPLY FILTERS
+# ============================================================
 f = df.copy()
 
-if search_text.strip():
+if (search_text or "").strip():
     s = search_text.strip().lower()
     f = f[f["label"].str.lower().str.contains(s, na=False)]
+
+category_filter = st.session_state.get("rk_category_filter", "All")
+mashbill_filter = st.session_state.get("rk_mashbill_filter", "All")
 
 if category_filter != "All":
     f = f[f["category"] == category_filter]
@@ -209,28 +260,70 @@ f = f[f["rating_count"] >= int(min_pours)]
 # Sort and limit
 f = f.sort_values(["avg_rating", "rating_count", "label"], ascending=[False, False, True]).head(int(limit_n))
 
+
 # ============================================================
 # SUMMARY
 # ============================================================
 st.divider()
 
-summary_left, summary_right = st.columns(2)
+summary_left, summary_right, summary_third = st.columns([1, 1, 2])
 with summary_left:
-    st.metric("Rated bottles (after filters)", str(len(f)))
+    st.metric("Rated bottles", str(len(f)))
 with summary_right:
-    st.metric("Rated pours (window)", str(len(events_df)))
+    st.metric("Rated pours", str(len(events_df)))
+with summary_third:
+    scope_label = "Global" if scope == "Global" else f"My Stats ({display_name})"
+    st.caption(f"Scope: **{scope_label}**")
 
-scope_label = "Global" if scope == "Global" else f"My Stats ({display_name})"
-st.caption(f"Scope: **{scope_label}**")
+# If empty because of filters, give the user a way out
+if f.empty:
+    card(
+        "Nothing matches your filters",
+        "Try lowering <b>Min rated pours</b> to 1, switching to <b>All time</b>, or hit <b>Reset filters</b>.",
+    )
+    st.stop()
+
 
 # ============================================================
-# RESULTS
+# LEADERBOARD (with per-row Open)
 # ============================================================
 st.subheader("Leaderboard")
 
-if f.empty:
-    st.info("No bottles match your filters.")
-    st.stop()
+# Keep it bar-vibe: top cards (buttons per row), then the full table below.
+top_cards_n = min(25, len(f))
+
+for i in range(top_cards_n):
+    row = f.iloc[i]
+    label = row["label"]
+    avg_rating = float(row["avg_rating"])
+    rating_count = int(row["rating_count"])
+
+    meta_bits = []
+    if str(row.get("category") or "").strip():
+        meta_bits.append(str(row.get("category")))
+    if str(row.get("mashbill_style") or "").strip():
+        meta_bits.append(str(row.get("mashbill_style")))
+    proof_val = row.get("proof")
+    if proof_val is not None and str(proof_val).strip():
+        meta_bits.append(f"Proof {proof_val}")
+
+    meta = " · ".join(meta_bits) if meta_bits else "—"
+
+    left, right = st.columns([6, 1])
+    with left:
+        st.markdown(f"**{i+1}. {label}**")
+        st.caption(f"Board Avg: {avg_rating:.2f}  |  Rated pours: {rating_count}  |  {meta}")
+    with right:
+        if st.button("Open", key=f"rk_open_{row['bottle_id']}"):
+            st.session_state["active_bottle_id"] = row["bottle_id"]
+            st.session_state["active_bottle_label"] = label
+            st.success("Active bottle set. Click Bottles in the sidebar.")
+            st.rerun()
+
+    st.divider()
+
+# Full table (for power users)
+st.subheader("Full table")
 
 display_cols = [
     "label",
@@ -245,22 +338,6 @@ display_cols = [
 ]
 
 display_df = f[display_cols].copy()
-display_df["avg_rating"] = display_df["avg_rating"].map(lambda x: f"{x:.2f}")
+display_df["avg_rating"] = display_df["avg_rating"].map(lambda x: f"{float(x):.2f}")
 
 st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-st.divider()
-
-# ============================================================
-# OPEN BOTTLE
-# ============================================================
-st.subheader("Open a bottle")
-
-label_list = f["label"].tolist()
-label_choice = st.selectbox("Choose from current list", label_list)
-
-if st.button("Open Bottle Page", key="open_bottle_btn"):
-    row = f[f["label"] == label_choice].iloc[0]
-    st.session_state["active_bottle_id"] = row["bottle_id"]
-    st.session_state["active_bottle_label"] = row["label"]
-    st.success("Active bottle set. Click Bottles in the sidebar to view it.")
