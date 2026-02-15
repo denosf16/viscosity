@@ -1,4 +1,6 @@
 # Welcome.py
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -6,91 +8,51 @@ from supabase import create_client
 
 from lib.ui import apply_speakeasy_theme, card
 from lib.device_token import get_or_create_device_token
-from lib.session import restore_login_if_possible
 
 
+# ============================================================
+# SETUP
+# ============================================================
 st.set_page_config(page_title="Welcome", page_icon="🥃", layout="centered")
 apply_speakeasy_theme()
 
-# ---------- Supabase ----------
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-# ---------- Device token ----------
 device_token = get_or_create_device_token()
 
-# ============================================================
-# AUTO-RESTORE SESSION (prefer device_sessions, fallback helper)
-# ============================================================
-needs_restore = ("active_group_id" not in st.session_state) or ("member_id" not in st.session_state)
 
-# 1) Preferred: device_sessions table keyed by device_token
-if needs_restore:
-    session_rows = []
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ============================================================
+# IDENTITY RESTORE (device_sessions -> display_name)
+# ============================================================
+if "display_name" not in st.session_state or not (st.session_state.get("display_name") or "").strip():
     try:
-        session_rows = (
+        rows = (
             sb.table("device_sessions")
-            .select("member_id, group_id")
+            .select("display_name")
             .eq("token", device_token)
             .limit(1)
             .execute()
             .data
         ) or []
-    except Exception:
-        session_rows = []
+        if rows and (rows[0].get("display_name") or "").strip():
+            st.session_state["display_name"] = rows[0]["display_name"].strip()
 
-    if session_rows:
-        member_id = session_rows[0].get("member_id")
-        group_id = session_rows[0].get("group_id")
-
-        group_rows = []
-        member_rows = []
-        try:
-            group_rows = (
-                sb.table("groups")
-                .select("name")
-                .eq("id", group_id)
-                .limit(1)
-                .execute()
-                .data
-            ) or []
-        except Exception:
-            group_rows = []
-
-        try:
-            member_rows = (
-                sb.table("group_members")
-                .select("display_name")
-                .eq("id", member_id)
-                .limit(1)
-                .execute()
-                .data
-            ) or []
-        except Exception:
-            member_rows = []
-
-        if group_rows and member_rows:
-            st.session_state["active_group_id"] = group_id
-            st.session_state["group_name"] = group_rows[0].get("name")
-            st.session_state["member_id"] = member_id
-            st.session_state["display_name"] = member_rows[0].get("display_name")
-
-            # Touch last_seen_at (best effort)
+            # best-effort touch
             try:
                 sb.table("device_sessions").update(
-                    {"last_seen_at": datetime.now(timezone.utc).isoformat()}
+                    {"last_seen_at": utc_now_iso()}
                 ).eq("token", device_token).execute()
             except Exception:
                 pass
-
-# 2) Fallback: only if still not set
-needs_restore = ("active_group_id" not in st.session_state) or ("member_id" not in st.session_state)
-if needs_restore:
-    try:
-        restore_login_if_possible(sb)
     except Exception:
         pass
+
 
 # ============================================================
 # SIDEBAR
@@ -98,80 +60,99 @@ if needs_restore:
 st.sidebar.markdown("## Welcome")
 st.sidebar.caption(f"Device token: `{device_token[:10]}…`")
 
-if "active_group_id" in st.session_state:
-    st.sidebar.markdown("### Active Group")
-    st.sidebar.success(st.session_state.get("group_name", "Unknown"))
-
-    display_name = st.session_state.get("display_name")
-    member_id = st.session_state.get("member_id")
-
-    if (not display_name) and member_id:
-        try:
-            row = (
-                sb.table("group_members")
-                .select("display_name")
-                .eq("id", member_id)
-                .limit(1)
-                .execute()
-                .data
-            )
-            if row:
-                display_name = row[0].get("display_name")
-                st.session_state["display_name"] = display_name
-        except Exception:
-            display_name = None
-
-    st.sidebar.markdown(f"**You:** {display_name or 'Member'}")
+display_name = (st.session_state.get("display_name") or "").strip() or None
+if display_name:
+    st.sidebar.success(f"You: {display_name}")
 else:
-    st.sidebar.warning("No group selected yet")
-    st.sidebar.caption("Go to Create or Join Group to start.")
+    st.sidebar.warning("No drinking name yet")
+
 
 # ============================================================
 # MAIN
 # ============================================================
 st.title("Welcome to Viscosity 🥃")
-st.caption("A private bourbon and whiskey discussion app for your crew.")
+st.caption("Real bars are private and intentional. This is where people share what’s worth ordering.")
 st.divider()
 
-if "active_group_id" in st.session_state:
-    st.success(
-        f"You are in **{st.session_state.get('group_name', 'Unknown')}** "
-        f"as **{st.session_state.get('display_name', 'Member')}**."
-    )
-else:
-    st.info("Create or join a group to get started.")
+# ------------------------------------------------------------
+# SET YOUR DRINKING NAME
+# ------------------------------------------------------------
+st.subheader("Set your drinking name")
 
+name_input = st.text_input(
+    "Drinking name",
+    value=display_name or "",
+    placeholder="Example: Sandman, OakKing, BarrelBandit",
+)
+
+save_disabled = not name_input.strip()
+
+if st.button("Save name", disabled=save_disabled):
+    clean = name_input.strip()
+
+    st.session_state["display_name"] = clean
+
+    # Upsert device_sessions row keyed by token
+    # Note: requires device_sessions.display_name to exist (you added this)
+    try:
+        existing = (
+            sb.table("device_sessions")
+            .select("id")
+            .eq("token", device_token)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+
+        if existing:
+            sb.table("device_sessions").update(
+                {"display_name": clean, "last_seen_at": utc_now_iso()}
+            ).eq("token", device_token).execute()
+        else:
+            sb.table("device_sessions").insert(
+                {"token": device_token, "display_name": clean, "last_seen_at": utc_now_iso()}
+            ).execute()
+    except Exception:
+        # Even if Supabase write fails, keep local session value
+        pass
+
+    st.success("Name saved.")
+    st.rerun()
+
+st.divider()
+
+# ------------------------------------------------------------
+# WHAT THIS IS
+# ------------------------------------------------------------
 card(
-    "What you can do",
-    "- Create or join a group with a join code<br>"
-    "- Post when you're having a glass (with a scouting report)<br>"
-    "- Rate bottles 1–10 and leave notes<br>"
-    "- Upload bottle photos and audio notes<br>"
-    "- See rankings inside your group",
+    "The idea",
+    "Walk into a good bar, overhear what’s worth ordering, and leave a note for the next person.<br>"
+    "No accounts. No joining. Just pours, tags, and taste history.",
 )
 
 card(
-    "Quick start",
-    "1. Open <b>Create or Join Group</b><br>"
-    "2. Create a group or enter a join code<br>"
-    "3. Go to <b>Home</b> and post your first pour",
+    "How it works",
+    "1. Set your drinking name (above)<br>"
+    "2. Go to <b>Bottles</b> and drop a pour (rating + notes)<br>"
+    "3. Use <b>Tags</b> to filter the vibe<br>"
+    "4. Check <b>Rankings</b> for the statistical summary",
 )
 
 c1, c2 = st.columns(2)
 with c1:
     card(
-        "MVP rules",
-        "- Join code only (no passwords yet)<br>"
+        "What’s live",
         "- Global bottle catalog<br>"
-        "- Group-scoped ratings, comments, events",
+        "- Pours with ratings and notes<br>"
+        "- Tag filters<br>"
+        "- Rankings from pours",
     )
 with c2:
     card(
-        "Coming soon",
-        "- True login + private RLS<br>"
-        "- Reply threads in discussion<br>"
-        "- Push notifications",
+        "Later",
+        "- Attachments (photos, audio)<br>"
+        "- Better discovery (trending bottles)<br>"
+        "- More stats (time windows, tag leaderboards)",
     )
 
-st.caption("Built for friends. Weekend MVP.")
-
+st.caption("Built like a bar board. Premium by voice, not by gates.")
