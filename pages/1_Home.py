@@ -1,7 +1,7 @@
 # pages/1_Home.py
 # "Room" page (read-only):
 # - Global feed (no posting)
-# - Respects active tag filter (from Tags page)
+# - No tag concept
 # - Each item has "Open bottle" to jump into Bottle page
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 device_token = get_or_create_device_token()
 display_name = (st.session_state.get("display_name") or "").strip() or None
-active_tag = (st.session_state.get("active_tag") or "").strip() or None
 
 
 def bottle_label(b: dict) -> str:
@@ -45,15 +44,6 @@ if display_name:
 else:
     st.sidebar.caption("Browsing is open. Set your drinking name on Welcome to post pours.")
 
-if active_tag:
-    st.sidebar.markdown("### Tag filter")
-    st.sidebar.code(active_tag)
-    if st.sidebar.button("Clear tag filter"):
-        st.session_state["active_tag"] = ""
-        st.rerun()
-else:
-    st.sidebar.caption("No tag filter active.")
-
 
 # ============================================================
 # MAIN
@@ -71,22 +61,17 @@ with controls_left:
 with controls_right:
     limit_n = st.number_input("Show", min_value=10, max_value=200, value=50, step=10)
 
-q = (
+events = (
     sb.table("events")
-    .select("id, created_at, message, bottle_id, rating, location, primary_tag, author_display_name")
+    .select("id, created_at, message, bottle_id, rating, location, author_display_name")
     .order("created_at", desc=True)
     .limit(int(limit_n))
-)
-if active_tag:
-    q = q.eq("primary_tag", active_tag)
-
-events = (q.execute().data) or []
+    .execute()
+    .data
+) or []
 
 if not events:
-    msg = "No activity yet."
-    if active_tag:
-        msg += " Try clearing the tag filter."
-    card("Nothing pouring yet", msg)
+    card("Nothing pouring yet", "No activity yet. Go to Bottle and drop the first pour.")
     st.stop()
 
 # Resolve bottle labels in one fetch
@@ -108,15 +93,12 @@ for e in events:
     btext = bottle_by_id.get(e.get("bottle_id"), "a bottle")
 
     rating = e.get("rating")
-    tag = e.get("primary_tag")
     loc = e.get("location")
     msg = e.get("message")
 
     header = f"**{name}**  ·  **{btext}**"
     if isinstance(rating, (int, float)):
         header += f"  ·  **{int(rating)}/10**"
-    if tag:
-        header += f"  ·  `{tag}`"
     if loc:
         header += f"  ·  {loc}"
 

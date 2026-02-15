@@ -155,4 +155,3 @@ with c2:
         "- More stats (time windows, tag leaderboards)",
     )
 
-st.caption("Built like a bar board. Premium by voice, not by gates.")
