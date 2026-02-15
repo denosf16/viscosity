@@ -1,6 +1,7 @@
-# pages/3_Bottles.py
+# pages/2_Bottle.py
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -13,7 +14,7 @@ from lib.device_token import get_or_create_device_token
 # ============================================================
 # SETUP
 # ============================================================
-st.set_page_config(page_title="Bottle", page_icon="🍾", layout="wide")
+st.set_page_config(page_title="Bottle", page_icon="🥃", layout="wide")
 apply_speakeasy_theme()
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -24,14 +25,24 @@ device_token = get_or_create_device_token()
 display_name = (st.session_state.get("display_name") or "").strip() or None
 
 
-def bottle_label(b: dict) -> str:
-    brand = (b.get("brand") or "").strip()
-    expr = (b.get("expression") or "").strip()
-    return f"{brand} - {expr}" if expr else brand
-
-
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _clean_text(s: str | None) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _norm_key(s: str | None) -> str:
+    return _clean_text(s).lower()
+
+
+def bottle_label(b: dict) -> str:
+    brand = _clean_text(b.get("brand"))
+    expr = _clean_text(b.get("expression"))
+    return f"{brand} - {expr}" if expr else brand
 
 
 # ============================================================
@@ -43,17 +54,17 @@ st.sidebar.caption(f"Device: `{device_token[:10]}…`")
 if display_name:
     st.sidebar.success(f"You: {display_name}")
 else:
-    st.sidebar.warning("No drinking name yet")
-    st.sidebar.caption("You can browse. Set your name on Welcome to post pours.")
+    st.sidebar.warning("Set your drinking name on Welcome to interact")
 
 
 # ============================================================
-# BOTTLE PICKER
+# MAIN
 # ============================================================
-st.title("Bottle Page 🍾")
-st.caption("Search the catalog, see recent pours, and add your own.")
+st.title("Bottle Page 🥃")
+st.caption("Search the catalog, drop a pour, and build the board.")
 st.divider()
 
+# ---------- Load bottles for picker ----------
 bottles_list = (sb.table("bottles").select("id, brand, expression").execute().data) or []
 label_to_id = {bottle_label(b): b["id"] for b in bottles_list}
 all_labels = sorted(label_to_id.keys())
@@ -78,6 +89,122 @@ bottle_id = label_to_id[selected_label]
 st.session_state["active_bottle_id"] = bottle_id
 st.session_state["active_bottle_label"] = selected_label
 
+# ============================================================
+# ADD NEW BOTTLE (requires drinking name)
+# ============================================================
+with st.expander("Add a new bottle", expanded=False):
+    if not display_name:
+        st.info("Set your drinking name on Welcome to add bottles.")
+    else:
+        st.caption("Keep it simple: brand required, expression optional. We prevent duplicates.")
+        nb1, nb2 = st.columns([2, 2])
+
+        with nb1:
+            new_brand = st.text_input("Brand (required)", key="new_bottle_brand")
+            new_expression = st.text_input("Expression (optional)", key="new_bottle_expression")
+
+        with nb2:
+            new_category = st.text_input("Category (optional)", key="new_bottle_category")
+            new_proof = st.number_input("Proof (optional)", min_value=0.0, max_value=200.0, value=0.0, step=0.5)
+
+        nb3, nb4 = st.columns([2, 2])
+        with nb3:
+            new_distillery = st.text_input("Distillery (optional)", key="new_bottle_distillery")
+            new_location = st.text_input("Distillery Location (optional)", key="new_bottle_distillery_location")
+        with nb4:
+            new_barrel = st.text_input("Barrel Type (optional)", key="new_bottle_barrel_type")
+            new_mashbill = st.text_input("Mashbill Style (optional)", key="new_bottle_mashbill_style")
+
+        add_clicked = st.button("Add bottle", key="add_bottle_btn", disabled=(not _clean_text(new_brand)))
+
+        if add_clicked:
+            brand_clean = _clean_text(new_brand)
+            expr_clean = _clean_text(new_expression)
+
+            # ---------- Duplicate check (case-insensitive) ----------
+            # Pull candidates by brand (cheap) then compare normalized keys in Python
+            try:
+                candidates = (
+                    sb.table("bottles")
+                    .select("id, brand, expression")
+                    .ilike("brand", brand_clean)
+                    .limit(50)
+                    .execute()
+                    .data
+                ) or []
+            except Exception:
+                candidates = []
+
+            target_brand_k = _norm_key(brand_clean)
+            target_expr_k = _norm_key(expr_clean)  # empty => ""
+
+            match = None
+            for c in candidates:
+                if _norm_key(c.get("brand")) != target_brand_k:
+                    continue
+                c_expr_k = _norm_key(c.get("expression"))
+                if c_expr_k == target_expr_k:
+                    match = c
+                    break
+
+            if match:
+                # Use existing
+                existing_label = bottle_label(match)
+                st.session_state["active_bottle_id"] = match["id"]
+                st.session_state["active_bottle_label"] = existing_label
+                st.success(f"Already exists. Opened: {existing_label}")
+                st.rerun()
+
+            # ---------- Lightweight "possible matches" ----------
+            possible = []
+            for c in candidates:
+                # same brand (normalized) but different expression, or brand contains overlap
+                if target_brand_k in _norm_key(c.get("brand")) or _norm_key(c.get("brand")) in target_brand_k:
+                    possible.append(c)
+
+            if possible and not expr_clean:
+                st.warning("Possible matches found. If one of these is what you meant, use it instead of creating a duplicate.")
+                for c in possible[:5]:
+                    plabel = bottle_label(c)
+                    if st.button(f"Use existing: {plabel}", key=f"use_existing_{c['id']}"):
+                        st.session_state["active_bottle_id"] = c["id"]
+                        st.session_state["active_bottle_label"] = plabel
+                        st.rerun()
+
+            # ---------- Insert new bottle ----------
+            payload = {
+                "brand": brand_clean,
+                "expression": expr_clean if expr_clean else None,
+                "category": _clean_text(new_category) or None,
+                "proof": float(new_proof) if float(new_proof) > 0 else None,
+                "distillery": _clean_text(new_distillery) or None,
+                "distillery_location": _clean_text(new_location) or None,
+                "barrel_type": _clean_text(new_barrel) or None,
+                "mashbill_style": _clean_text(new_mashbill) or None,
+                # optional columns you might have:
+                # "created_by_device_token": device_token,
+                # "created_by_display_name": display_name,
+            }
+
+            try:
+                res = sb.table("bottles").insert(payload).execute().data or []
+                if not res:
+                    st.error("Bottle insert returned no rows.")
+                    st.stop()
+
+                new_id = res[0]["id"]
+                new_label = bottle_label(res[0])
+
+                st.session_state["active_bottle_id"] = new_id
+                st.session_state["active_bottle_label"] = new_label
+
+                st.success(f"Added: {new_label}")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Add bottle failed: {e}")
+
+st.divider()
 
 # ============================================================
 # BOTTLE DETAILS
@@ -111,9 +238,8 @@ with meta_cols[1]:
 
 st.divider()
 
-
 # ============================================================
-# DROP A POUR (rating per post)
+# DROP A POUR (requires drinking name)
 # ============================================================
 st.subheader("Drop a Pour")
 
@@ -136,7 +262,7 @@ post_disabled = not display_name
 
 if st.button("Post Pour", disabled=post_disabled, key="post_pour_bottle_btn"):
     payload = {
-        "event_type": "having_a_glass",  # safe with current constraint
+        "event_type": "having_a_glass",
         "bottle_id": bottle_id,
         "message": notes_val.strip() if notes_val.strip() else None,
         "rating": int(rating_val),
@@ -150,7 +276,6 @@ if st.button("Post Pour", disabled=post_disabled, key="post_pour_bottle_btn"):
     st.rerun()
 
 st.divider()
-
 
 # ============================================================
 # RECENT POURS FOR THIS BOTTLE
