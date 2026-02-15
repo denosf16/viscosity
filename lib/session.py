@@ -1,71 +1,110 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional, Any
+
 import streamlit as st
-from supabase import create_client
 
-# Cookie manager (Streamlit component)
-from streamlit_cookies_manager import EncryptedCookieManager
+from lib.device_token import get_or_create_device_token
 
 
-def get_cookie_manager():
-    # You must set a password in Streamlit Cloud secrets for encryption
-    # COOKIE_PASSWORD should be a long random string
-    cookies = EncryptedCookieManager(
-        prefix="viscosity_",
-        password=st.secrets["COOKIE_PASSWORD"],
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def restore_login_if_possible(sb: Any) -> None:
+    """
+    Restores st.session_state from device_sessions using the device_token.
+    No cookies. No extra dependencies.
+    """
+    # Already logged in this run
+    if st.session_state.get("active_group_id") and st.session_state.get("member_id"):
+        return
+
+    token = get_or_create_device_token()
+
+    session_res = (
+        sb.table("device_sessions")
+        .select("member_id, group_id")
+        .eq("token", token)
+        .limit(1)
+        .execute()
+        .data
     )
-    if not cookies.ready():
-        st.stop()
-    return cookies
 
-
-def save_login(cookies, *, group_id: str, group_name: str, member_id: str, display_name: str):
-    cookies["active_group_id"] = group_id
-    cookies["group_name"] = group_name
-    cookies["member_id"] = member_id
-    cookies["display_name"] = display_name
-    cookies.save()
-
-
-def clear_login(cookies):
-    for k in ["active_group_id", "group_name", "member_id", "display_name"]:
-        if k in cookies:
-            del cookies[k]
-    cookies.save()
-
-
-def restore_login_if_possible(sb):
-    # If session already set, do nothing
-    if "active_group_id" in st.session_state and "member_id" in st.session_state:
+    if not session_res:
         return
 
-    cookies = get_cookie_manager()
+    member_id = session_res[0]["member_id"]
+    group_id = session_res[0]["group_id"]
 
-    group_id = cookies.get("active_group_id")
-    member_id = cookies.get("member_id")
-    group_name = cookies.get("group_name")
-    display_name = cookies.get("display_name")
+    group_res = (
+        sb.table("groups")
+        .select("name")
+        .eq("id", group_id)
+        .limit(1)
+        .execute()
+        .data
+    )
 
-    if not group_id or not member_id:
-        return
-
-    # Validate the member still exists and belongs to the group
-    res = (
+    member_res = (
         sb.table("group_members")
-        .select("id, group_id, display_name")
+        .select("display_name")
         .eq("id", member_id)
         .limit(1)
         .execute()
         .data
     )
-    if not res:
-        clear_login(cookies)
-        return
 
-    row = res[0]
-    if row["group_id"] != group_id:
-        clear_login(cookies)
+    if not group_res or not member_res:
         return
 
     st.session_state["active_group_id"] = group_id
+    st.session_state["group_name"] = group_res[0]["name"]
     st.session_state["member_id"] = member_id
-    st.session_state["group_name"] = group_name or "Group"
-    st.session_state["display_name"] = display_name or row.get("display_name") or "Member"
+    st.session_state["display_name"] = member_res[0]["display_name"]
+
+    # Touch last_seen_at (use an ISO timestamp, not "now()")
+    try:
+        sb.table("device_sessions").update(
+            {"last_seen_at": _utc_now_iso()}
+        ).eq("token", token).execute()
+    except Exception:
+        pass
+
+
+def save_device_session(sb: Any, group_id: str, member_id: str) -> None:
+    """
+    Upserts device_sessions for this device_token so the next visit auto-restores.
+    Call this after create/join.
+    """
+    token = get_or_create_device_token()
+
+    payload = {
+        "token": token,
+        "group_id": group_id,
+        "member_id": member_id,
+        "last_seen_at": _utc_now_iso(),
+    }
+
+    # If you have a unique constraint on token, upsert is ideal.
+    # Some Supabase Python versions support upsert(...). If not, fallback.
+    try:
+        sb.table("device_sessions").upsert(payload).execute()
+        return
+    except Exception:
+        pass
+
+    existing = (
+        sb.table("device_sessions")
+        .select("token")
+        .eq("token", token)
+        .limit(1)
+        .execute()
+        .data
+    )
+
+    if existing:
+        sb.table("device_sessions").update(payload).eq("token", token).execute()
+    else:
+        sb.table("device_sessions").insert(payload).execute()
