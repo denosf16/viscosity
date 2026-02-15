@@ -4,11 +4,15 @@ import string
 import streamlit as st
 from supabase import create_client
 
+from lib.device_token import get_or_create_device_token
+
 
 # ---------- Setup ----------
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_ANON_KEY"]
 sb = create_client(url, key)
+
+device_token = get_or_create_device_token()
 
 
 def generate_join_code(length: int = 6) -> str:
@@ -20,6 +24,7 @@ st.title("Create or Join Group 🥃")
 st.divider()
 
 tab1, tab2 = st.tabs(["Create Group", "Join Group"])
+
 
 # ============================================================
 # CREATE GROUP
@@ -59,12 +64,7 @@ with tab1:
         # Insert creator as member
         member_res = (
             sb.table("group_members")
-            .insert(
-                {
-                    "group_id": group_id,
-                    "display_name": display_name.strip(),
-                }
-            )
+            .insert({"group_id": group_id, "display_name": display_name.strip()})
             .execute()
             .data
         )
@@ -74,6 +74,25 @@ with tab1:
             st.stop()
 
         member_id = member_res[0]["id"]
+
+        # Persist this device -> member/group mapping (auto-login next time)
+        existing = (
+            sb.table("device_sessions")
+            .select("id")
+            .eq("token", device_token)
+            .limit(1)
+            .execute()
+            .data
+        )
+
+        if existing:
+            sb.table("device_sessions").update(
+                {"member_id": member_id, "group_id": group_id, "last_seen_at": "now()"}
+            ).eq("token", device_token).execute()
+        else:
+            sb.table("device_sessions").insert(
+                {"token": device_token, "member_id": member_id, "group_id": group_id}
+            ).execute()
 
         # Set session
         st.session_state["active_group_id"] = group_id
@@ -144,16 +163,30 @@ with tab2:
         else:
             member_res = (
                 sb.table("group_members")
-                .insert(
-                    {
-                        "group_id": group_id,
-                        "display_name": display_name_clean,
-                    }
-                )
+                .insert({"group_id": group_id, "display_name": display_name_clean})
                 .execute()
                 .data
             )
             member_id = member_res[0]["id"]
+
+        # Persist this device -> member/group mapping (auto-login next time)
+        existing = (
+            sb.table("device_sessions")
+            .select("id")
+            .eq("token", device_token)
+            .limit(1)
+            .execute()
+            .data
+        )
+
+        if existing:
+            sb.table("device_sessions").update(
+                {"member_id": member_id, "group_id": group_id, "last_seen_at": "now()"}
+            ).eq("token", device_token).execute()
+        else:
+            sb.table("device_sessions").insert(
+                {"token": device_token, "member_id": member_id, "group_id": group_id}
+            ).execute()
 
         st.session_state["active_group_id"] = group_id
         st.session_state["group_name"] = group["name"]
@@ -162,4 +195,3 @@ with tab2:
 
         st.success("Joined successfully!")
         st.rerun()
-
