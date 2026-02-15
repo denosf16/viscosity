@@ -22,7 +22,6 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 device_token = get_or_create_device_token()
 display_name = (st.session_state.get("display_name") or "").strip() or None
-active_tag = (st.session_state.get("active_tag") or "").strip() or None
 
 
 def bottle_label(b: dict) -> str:
@@ -46,13 +45,6 @@ if display_name:
 else:
     st.sidebar.warning("No drinking name yet")
     st.sidebar.caption("You can browse. Set your name on Welcome to post pours.")
-
-if active_tag:
-    st.sidebar.markdown("### Tag filter")
-    st.sidebar.code(active_tag)
-    if st.sidebar.button("Clear tag filter"):
-        st.session_state["active_tag"] = ""
-        st.rerun()
 
 
 # ============================================================
@@ -128,12 +120,10 @@ st.subheader("Drop a Pour")
 if not display_name:
     st.info("Set your drinking name on Welcome to post pours. Browsing is open.")
 
-c1, c2, c3 = st.columns([1, 2, 2])
+c1, c2 = st.columns([1, 2])
 with c1:
     rating_val = st.slider("Rating", 1, 10, 7)
 with c2:
-    tag_val = st.text_input("Tag (optional)", value=active_tag or "", placeholder="ACTION, VEGAS_TRIP, DATE_NIGHT")
-with c3:
     location_val = st.text_input("Location (optional)", placeholder="Bar name, city, couch, etc.")
 
 notes_val = st.text_area(
@@ -151,7 +141,6 @@ if st.button("Post Pour", disabled=post_disabled, key="post_pour_bottle_btn"):
         "message": notes_val.strip() if notes_val.strip() else None,
         "rating": int(rating_val),
         "location": location_val.strip() if location_val.strip() else None,
-        "primary_tag": tag_val.strip() if tag_val.strip() else None,
         "author_display_name": display_name,
         "author_device_token": device_token,
         "created_at": utc_now_iso(),
@@ -168,17 +157,15 @@ st.divider()
 # ============================================================
 st.subheader("Recent Pours")
 
-q = (
+events = (
     sb.table("events")
-    .select("id, created_at, message, rating, location, primary_tag, author_display_name")
+    .select("id, created_at, message, rating, location, author_display_name")
     .eq("bottle_id", bottle_id)
     .order("created_at", desc=True)
     .limit(50)
-)
-if active_tag:
-    q = q.eq("primary_tag", active_tag)
-
-events = (q.execute().data) or []
+    .execute()
+    .data
+) or []
 
 if not events:
     card("No pours yet", "Be the first to post a pour for this bottle.")
@@ -196,7 +183,6 @@ if ratings:
 for e in events:
     name = (e.get("author_display_name") or "Someone").strip() or "Someone"
     rating = e.get("rating")
-    tag = e.get("primary_tag")
     loc = e.get("location")
     msg = e.get("message")
 
@@ -204,8 +190,6 @@ for e in events:
     bits = []
     if isinstance(rating, (int, float)):
         bits.append(f"{int(rating)}/10")
-    if tag:
-        bits.append(tag)
     if loc:
         bits.append(loc)
 
@@ -217,4 +201,3 @@ for e in events:
         st.write(msg)
     st.caption(e.get("created_at", ""))
     st.divider()
-
