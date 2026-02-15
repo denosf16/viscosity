@@ -40,6 +40,7 @@ if "display_name" not in st.session_state or not (st.session_state.get("display_
             .execute()
             .data
         ) or []
+
         if rows and (rows[0].get("display_name") or "").strip():
             st.session_state["display_name"] = rows[0]["display_name"].strip()
 
@@ -61,17 +62,21 @@ st.sidebar.markdown("## Welcome")
 st.sidebar.caption(f"Device token: `{device_token[:10]}…`")
 
 display_name = (st.session_state.get("display_name") or "").strip() or None
+
 if display_name:
     st.sidebar.success(f"You: {display_name}")
 else:
-    st.sidebar.warning("No drinking name yet")
+    st.sidebar.warning("No drinking name set")
 
 
 # ============================================================
 # MAIN
 # ============================================================
 st.title("Welcome to Viscosity 🥃")
-st.caption("Real bars are private and intentional. This is where people share what’s worth ordering.")
+st.caption(
+    "Walk into a good bar, overhear what’s worth ordering, "
+    "and leave a note for the next person."
+)
 st.divider()
 
 # ------------------------------------------------------------
@@ -89,11 +94,9 @@ save_disabled = not name_input.strip()
 
 if st.button("Save name", disabled=save_disabled):
     clean = name_input.strip()
-
     st.session_state["display_name"] = clean
 
     # Upsert device_sessions row keyed by token
-    # Note: requires device_sessions.display_name to exist (you added this)
     try:
         existing = (
             sb.table("device_sessions")
@@ -106,14 +109,22 @@ if st.button("Save name", disabled=save_disabled):
 
         if existing:
             sb.table("device_sessions").update(
-                {"display_name": clean, "last_seen_at": utc_now_iso()}
+                {
+                    "display_name": clean,
+                    "last_seen_at": utc_now_iso(),
+                }
             ).eq("token", device_token).execute()
         else:
             sb.table("device_sessions").insert(
-                {"token": device_token, "display_name": clean, "last_seen_at": utc_now_iso()}
+                {
+                    "token": device_token,
+                    "display_name": clean,
+                    "last_seen_at": utc_now_iso(),
+                }
             ).execute()
+
     except Exception:
-        # Even if Supabase write fails, keep local session value
+        # If Supabase write fails, keep local session value
         pass
 
     st.success("Name saved.")
@@ -126,32 +137,36 @@ st.divider()
 # ------------------------------------------------------------
 card(
     "The idea",
-    "Walk into a good bar, overhear what’s worth ordering, and leave a note for the next person.<br>"
-    "No accounts. No joining. Just pours, tags, and taste history.",
+    "Real bars are private and intentional.<br>"
+    "This is where people share what’s worth ordering.<br>"
+    "No accounts. No joining. Just pours and taste history.",
 )
 
 card(
     "How it works",
     "1. Set your drinking name (above)<br>"
     "2. Go to <b>Bottles</b> and drop a pour (rating + notes)<br>"
-    "3. Use <b>Tags</b> to filter the vibe<br>"
+    "3. Check <b>Room</b> to see what people are drinking<br>"
     "4. Check <b>Rankings</b> for the statistical summary",
 )
 
 c1, c2 = st.columns(2)
+
 with c1:
     card(
         "What’s live",
         "- Global bottle catalog<br>"
         "- Pours with ratings and notes<br>"
-        "- Tag filters<br>"
+        "- Room (global feed)<br>"
         "- Rankings from pours",
     )
+
 with c2:
     card(
         "Later",
         "- Attachments (photos, audio)<br>"
         "- Better discovery (trending bottles)<br>"
-        "- More stats (time windows, tag leaderboards)",
+        "- More stats (time windows)",
     )
 
+st.caption("Built for friends. Weekend MVP.")
