@@ -1,43 +1,70 @@
+# pages/3_Bottles.py
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 from supabase import create_client
 
-from lib.storage import public_object_url
+from lib.ui import apply_speakeasy_theme, card
+from lib.device_token import get_or_create_device_token
 
 
-# ---------- Setup ----------
+# ============================================================
+# SETUP
+# ============================================================
+st.set_page_config(page_title="Bottle", page_icon="🍾", layout="wide")
+apply_speakeasy_theme()
+
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_ANON_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-
-# ---------- Session Guard ----------
-if "active_group_id" not in st.session_state or "member_id" not in st.session_state:
-    st.warning("You must create or join a group first.")
-    st.stop()
-
-group_id = st.session_state["active_group_id"]
-member_id = st.session_state["member_id"]
+device_token = get_or_create_device_token()
+display_name = (st.session_state.get("display_name") or "").strip() or None
+active_tag = (st.session_state.get("active_tag") or "").strip() or None
 
 
 def bottle_label(b: dict) -> str:
-    brand = b.get("brand") or ""
-    expr = b.get("expression")
+    brand = (b.get("brand") or "").strip()
+    expr = (b.get("expression") or "").strip()
     return f"{brand} - {expr}" if expr else brand
 
 
-# ---------- Load bottles (lightweight list) ----------
-bottles_list = sb.table("bottles").select("id, brand, expression").execute().data
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+st.sidebar.markdown("## Bottle")
+st.sidebar.caption(f"Device: `{device_token[:10]}…`")
+
+if display_name:
+    st.sidebar.success(f"You: {display_name}")
+else:
+    st.sidebar.warning("No drinking name yet")
+    st.sidebar.caption("You can browse. Set your name on Welcome to post pours.")
+
+if active_tag:
+    st.sidebar.markdown("### Tag filter")
+    st.sidebar.code(active_tag)
+    if st.sidebar.button("Clear tag filter"):
+        st.session_state["active_tag"] = ""
+        st.rerun()
+
+
+# ============================================================
+# BOTTLE PICKER
+# ============================================================
+st.title("Bottle Page 🍾")
+st.caption("Search the catalog, see recent pours, and add your own.")
+st.divider()
+
+bottles_list = (sb.table("bottles").select("id, brand, expression").execute().data) or []
 label_to_id = {bottle_label(b): b["id"] for b in bottles_list}
 all_labels = sorted(label_to_id.keys())
-
-
-# ---------- UI ----------
-st.title("Bottles 🍾")
-st.caption("Search the global catalog. Select a bottle to view ratings, discussion, and attachments.")
 
 search_text = st.text_input("Search bottles", placeholder="Try: Buffalo Trace, Four Roses, Maker's...")
 
@@ -47,7 +74,7 @@ if search_text.strip():
     labels = [x for x in all_labels if s in x.lower()]
 
 if not labels:
-    st.info("No bottles match your search.")
+    card("No matches", "No bottles match your search.")
     st.stop()
 
 default_label = st.session_state.get("active_bottle_label")
@@ -60,11 +87,14 @@ st.session_state["active_bottle_id"] = bottle_id
 st.session_state["active_bottle_label"] = selected_label
 
 
-# ---------- Load selected bottle details ----------
+# ============================================================
+# BOTTLE DETAILS
+# ============================================================
 bottle_rows = (
     sb.table("bottles")
     .select("id, brand, expression, distillery, distillery_location, proof, barrel_type, mashbill_style, category")
     .eq("id", bottle_id)
+    .limit(1)
     .execute()
     .data
 )
@@ -75,8 +105,6 @@ if not bottle_rows:
 
 b = bottle_rows[0]
 
-
-# ---------- Bottle Detail ----------
 st.subheader(selected_label)
 
 meta_cols = st.columns(2)
@@ -92,181 +120,101 @@ with meta_cols[1]:
 st.divider()
 
 
-# ---------- My Rating (editable) ----------
-st.subheader("My Rating")
+# ============================================================
+# DROP A POUR (rating per post)
+# ============================================================
+st.subheader("Drop a Pour")
 
-existing_my = (
-    sb.table("ratings")
-    .select("id, rating, notes, location")
-    .eq("group_id", group_id)
-    .eq("bottle_id", bottle_id)
-    .eq("member_id", member_id)
-    .execute()
-    .data
+if not display_name:
+    st.info("Set your drinking name on Welcome to post pours. Browsing is open.")
+
+c1, c2, c3 = st.columns([1, 2, 2])
+with c1:
+    rating_val = st.slider("Rating", 1, 10, 7)
+with c2:
+    tag_val = st.text_input("Tag (optional)", value=active_tag or "", placeholder="ACTION, VEGAS_TRIP, DATE_NIGHT")
+with c3:
+    location_val = st.text_input("Location (optional)", placeholder="Bar name, city, couch, etc.")
+
+notes_val = st.text_area(
+    "Notes (optional)",
+    placeholder="Nose, palate, finish, comparisons, vibe.",
+    height=130,
 )
 
-my_row = existing_my[0] if existing_my else None
+post_disabled = not display_name
 
-default_rating = int(my_row["rating"]) if my_row else 7
-default_notes = (my_row.get("notes") or "") if my_row else ""
-default_location = (my_row.get("location") or "") if my_row else ""
-
-my_rating = st.slider("Rating (1–10)", 1, 10, default_rating)
-my_location = st.text_input("Location (optional)", value=default_location)
-my_notes = st.text_area("Notes (optional)", value=default_notes, height=140)
-
-save_clicked = st.button("Save Rating", key="save_rating_btn")
-
-if save_clicked:
-    rating_val = int(my_rating)
-    loc_val = my_location.strip() if my_location.strip() else None
-    notes_val = my_notes.strip() if my_notes.strip() else None
-    now_iso = datetime.utcnow().isoformat()
-
-    if my_row:
-        sb.table("ratings").update(
-            {
-                "rating": rating_val,
-                "location": loc_val,
-                "notes": notes_val,
-                "updated_at": now_iso,
-            }
-        ).eq("id", my_row["id"]).execute()
-        st.success("Rating updated!")
-    else:
-        sb.table("ratings").insert(
-            {
-                "group_id": group_id,
-                "bottle_id": bottle_id,
-                "member_id": member_id,
-                "rating": rating_val,
-                "location": loc_val,
-                "notes": notes_val,
-            }
-        ).execute()
-        st.success("Rating saved!")
-
+if st.button("Post Pour", disabled=post_disabled, key="post_pour_bottle_btn"):
+    payload = {
+        "event_type": "having_a_glass",  # safe with current constraint
+        "bottle_id": bottle_id,
+        "message": notes_val.strip() if notes_val.strip() else None,
+        "rating": int(rating_val),
+        "location": location_val.strip() if location_val.strip() else None,
+        "primary_tag": tag_val.strip() if tag_val.strip() else None,
+        "author_display_name": display_name,
+        "author_device_token": device_token,
+        "created_at": utc_now_iso(),
+    }
+    sb.table("events").insert(payload).execute()
+    st.success("Pour posted.")
     st.rerun()
 
 st.divider()
 
 
-# ---------- Group Rating Stats ----------
-st.subheader("Group Rating Stats")
+# ============================================================
+# RECENT POURS FOR THIS BOTTLE
+# ============================================================
+st.subheader("Recent Pours")
 
-ratings_res = (
-    sb.table("ratings")
-    .select("rating", count="exact")
-    .eq("group_id", group_id)
-    .eq("bottle_id", bottle_id)
-    .execute()
-)
-
-ratings = ratings_res.data or []
-count_ratings = ratings_res.count or 0
-
-if count_ratings == 0:
-    st.info("No ratings yet for this bottle in this group.")
-else:
-    avg_rating = sum(r["rating"] for r in ratings) / count_ratings
-    st.metric("Avg Rating (Group)", f"{avg_rating:.2f}")
-    st.metric("Rating Count (Group)", str(count_ratings))
-
-st.divider()
-
-
-# ---------- Attachments ----------
-st.subheader("Attachments")
-
-media_rows = (
-    sb.table("media")
-    .select("media_type, storage_bucket, storage_path, created_at")
-    .eq("group_id", group_id)
+q = (
+    sb.table("events")
+    .select("id, created_at, message, rating, location, primary_tag, author_display_name")
     .eq("bottle_id", bottle_id)
     .order("created_at", desc=True)
     .limit(50)
-    .execute()
-    .data
 )
+if active_tag:
+    q = q.eq("primary_tag", active_tag)
 
-if not media_rows:
-    st.caption("No photos or audio yet for this bottle.")
-else:
-    for m in media_rows:
-        url = public_object_url(SUPABASE_URL, m["storage_bucket"], m["storage_path"])
-        if m["media_type"] == "photo":
-            st.image(url, caption=m["created_at"], use_container_width=True)
-        else:
-            st.audio(url)
-            st.caption(m["created_at"])
+events = (q.execute().data) or []
 
-st.divider()
-
-
-# ---------- Discussion Thread ----------
-st.subheader("Discussion")
-
-new_comment = st.text_area(
-    "Write a comment",
-    placeholder="Drop tasting notes, comparisons, hot takes, whatever...",
-    height=120,
-)
-
-post_col1, post_col2 = st.columns([1, 3])
-with post_col1:
-    post_clicked = st.button("Post Comment", key="post_comment_btn")
-with post_col2:
-    st.caption("Comments are visible to everyone in this group.")
-
-if post_clicked:
-    body = (new_comment or "").strip()
-    if not body:
-        st.error("Comment cannot be blank.")
-    else:
-        sb.table("comments").insert(
-            {
-                "group_id": group_id,
-                "bottle_id": bottle_id,
-                "member_id": member_id,
-                "body": body,
-                "parent_comment_id": None,
-            }
-        ).execute()
-        st.success("Comment posted!")
-        st.rerun()
-
-st.divider()
-
-comments = (
-    sb.table("comments")
-    .select("id, created_at, body, member_id")
-    .eq("group_id", group_id)
-    .eq("bottle_id", bottle_id)
-    .order("created_at", desc=True)
-    .limit(200)
-    .execute()
-    .data
-)
-
-if not comments:
-    st.info("No comments yet. Start the conversation.")
+if not events:
+    card("No pours yet", "Be the first to post a pour for this bottle.")
     st.stop()
 
-member_ids = list({c["member_id"] for c in comments})
-members = (
-    sb.table("group_members")
-    .select("id, display_name")
-    .in_("id", member_ids)
-    .execute()
-    .data
-)
-name_by_id = {m["id"]: m["display_name"] for m in members}
-
-st.caption(f"Showing {len(comments)} comments (newest first).")
-
-for c in comments:
-    name = name_by_id.get(c["member_id"], "Someone")
-    st.markdown(f"**{name}**")
-    st.write(c["body"])
-    st.caption(c["created_at"])
+ratings = [e.get("rating") for e in events if isinstance(e.get("rating"), (int, float))]
+if ratings:
+    avg_rating = sum(ratings) / len(ratings)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Avg rating", f"{avg_rating:.2f}")
+    m2.metric("Pour count", str(len(events)))
+    m3.metric("Rated pours", str(len(ratings)))
     st.divider()
+
+for e in events:
+    name = (e.get("author_display_name") or "Someone").strip() or "Someone"
+    rating = e.get("rating")
+    tag = e.get("primary_tag")
+    loc = e.get("location")
+    msg = e.get("message")
+
+    header = f"**{name}**"
+    bits = []
+    if isinstance(rating, (int, float)):
+        bits.append(f"{int(rating)}/10")
+    if tag:
+        bits.append(tag)
+    if loc:
+        bits.append(loc)
+
+    if bits:
+        header += "  ·  " + "  ·  ".join([f"**{bits[0]}**"] + [f"`{x}`" for x in bits[1:]])
+
+    st.markdown(header)
+    if msg:
+        st.write(msg)
+    st.caption(e.get("created_at", ""))
+    st.divider()
+

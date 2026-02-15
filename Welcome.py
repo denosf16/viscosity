@@ -1,3 +1,6 @@
+# Welcome.py
+from datetime import datetime, timezone
+
 import streamlit as st
 from supabase import create_client
 
@@ -24,51 +27,60 @@ needs_restore = ("active_group_id" not in st.session_state) or ("member_id" not 
 
 # 1) Preferred: device_sessions table keyed by device_token
 if needs_restore:
+    session_rows = []
     try:
-        session_res = (
+        session_rows = (
             sb.table("device_sessions")
             .select("member_id, group_id")
             .eq("token", device_token)
             .limit(1)
             .execute()
             .data
-        )
+        ) or []
     except Exception:
-        session_res = []
+        session_rows = []
 
-    if session_res:
-        member_id = session_res[0]["member_id"]
-        group_id = session_res[0]["group_id"]
+    if session_rows:
+        member_id = session_rows[0].get("member_id")
+        group_id = session_rows[0].get("group_id")
 
-        group_res = (
-            sb.table("groups")
-            .select("name")
-            .eq("id", group_id)
-            .limit(1)
-            .execute()
-            .data
-        )
+        group_rows = []
+        member_rows = []
+        try:
+            group_rows = (
+                sb.table("groups")
+                .select("name")
+                .eq("id", group_id)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+        except Exception:
+            group_rows = []
 
-        member_res = (
-            sb.table("group_members")
-            .select("display_name")
-            .eq("id", member_id)
-            .limit(1)
-            .execute()
-            .data
-        )
+        try:
+            member_rows = (
+                sb.table("group_members")
+                .select("display_name")
+                .eq("id", member_id)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+        except Exception:
+            member_rows = []
 
-        if group_res and member_res:
+        if group_rows and member_rows:
             st.session_state["active_group_id"] = group_id
-            st.session_state["group_name"] = group_res[0]["name"]
+            st.session_state["group_name"] = group_rows[0].get("name")
             st.session_state["member_id"] = member_id
-            st.session_state["display_name"] = member_res[0]["display_name"]
+            st.session_state["display_name"] = member_rows[0].get("display_name")
 
             # Touch last_seen_at (best effort)
             try:
-                sb.table("device_sessions").update({"last_seen_at": "now()"}).eq(
-                    "token", device_token
-                ).execute()
+                sb.table("device_sessions").update(
+                    {"last_seen_at": datetime.now(timezone.utc).isoformat()}
+                ).eq("token", device_token).execute()
             except Exception:
                 pass
 
@@ -84,6 +96,7 @@ if needs_restore:
 # SIDEBAR
 # ============================================================
 st.sidebar.markdown("## Welcome")
+st.sidebar.caption(f"Device token: `{device_token[:10]}…`")
 
 if "active_group_id" in st.session_state:
     st.sidebar.markdown("### Active Group")
@@ -92,7 +105,7 @@ if "active_group_id" in st.session_state:
     display_name = st.session_state.get("display_name")
     member_id = st.session_state.get("member_id")
 
-    if not display_name and member_id:
+    if (not display_name) and member_id:
         try:
             row = (
                 sb.table("group_members")
@@ -103,7 +116,7 @@ if "active_group_id" in st.session_state:
                 .data
             )
             if row:
-                display_name = row[0]["display_name"]
+                display_name = row[0].get("display_name")
                 st.session_state["display_name"] = display_name
         except Exception:
             display_name = None
