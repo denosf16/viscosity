@@ -17,9 +17,9 @@ from lib.device_token import get_or_create_device_token
 st.set_page_config(page_title="Rankings", page_icon="🏆", layout="wide")
 apply_speakeasy_theme()
 
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_ANON_KEY"]
-sb = create_client(url, key)
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
+sb = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 device_token = get_or_create_device_token()
 display_name = (st.session_state.get("display_name") or "").strip() or None
@@ -63,7 +63,16 @@ st.divider()
 # ============================================================
 st.subheader("Controls")
 
-c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+c0, c1, c2, c3, c4 = st.columns([1.2, 2, 1, 1, 1])
+
+with c0:
+    scope = st.radio(
+        "Scope",
+        ["Global", "My Stats"],
+        horizontal=True,
+        index=0,
+        help="Global ranks all rated pours. My Stats ranks only your pours on this device.",
+    )
 
 with c1:
     search_text = st.text_input("Search", placeholder="Type brand or expression...")
@@ -86,6 +95,15 @@ if window_choice != "All time":
     days = {"Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90}[window_choice]
     time_min_iso = _iso(_utc_now() - timedelta(days=days))
 
+# Guardrail: My Stats requires identity (otherwise it's empty and confusing)
+if scope == "My Stats" and not display_name:
+    card(
+        "Set your drinking name",
+        "My Stats is tied to your device identity.<br>"
+        "Go to <b>Welcome</b> and set your drinking name, then come back.",
+    )
+    st.stop()
+
 # ============================================================
 # LOAD EVENTS (rated pours only)
 # ============================================================
@@ -94,9 +112,12 @@ st.subheader("Loading rated pours")
 
 q = (
     sb.table("events")
-    .select("bottle_id, rating, created_at")
+    .select("bottle_id, rating, created_at, author_device_token")
     .not_.is_("rating", "null")
 )
+
+if scope == "My Stats":
+    q = q.eq("author_device_token", device_token)
 
 if time_min_iso:
     q = q.gte("created_at", time_min_iso)
@@ -104,7 +125,8 @@ if time_min_iso:
 events_rows = (q.limit(10000).execute().data) or []
 
 if not events_rows:
-    card("Nothing to rank yet", "No rated pours found. Drop a pour on the Bottle page.")
+    who = "you" if scope == "My Stats" else "anyone"
+    card("Nothing to rank yet", f"No rated pours found for {who} in this time window.")
     st.stop()
 
 events_df = pd.DataFrame(events_rows)
@@ -197,6 +219,9 @@ with summary_left:
     st.metric("Rated bottles (after filters)", str(len(f)))
 with summary_right:
     st.metric("Rated pours (window)", str(len(events_df)))
+
+scope_label = "Global" if scope == "Global" else f"My Stats ({display_name})"
+st.caption(f"Scope: **{scope_label}**")
 
 # ============================================================
 # RESULTS
