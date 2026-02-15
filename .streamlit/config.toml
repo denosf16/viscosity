@@ -4,3 +4,12 @@ enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#C98A3A"
+backgroundColor = "#0E0F10"
+secondaryBackgroundColor = "#15181B"
+textColor = "#F2EFEA"
+font = "serif"
+

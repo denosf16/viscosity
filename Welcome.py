@@ -1,10 +1,13 @@
 import streamlit as st
 from supabase import create_client
 
+from lib.ui import apply_speakeasy_theme, card
 from lib.device_token import get_or_create_device_token
 from lib.session import restore_login_if_possible
 
+
 st.set_page_config(page_title="Welcome", page_icon="🥃", layout="centered")
+apply_speakeasy_theme()
 
 # ---------- Supabase ----------
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -15,11 +18,12 @@ sb = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 device_token = get_or_create_device_token()
 
 # ============================================================
-# AUTO-RESTORE SESSION (prefer device_sessions, fallback restore helper)
+# AUTO-RESTORE SESSION (prefer device_sessions, fallback helper)
 # ============================================================
+needs_restore = ("active_group_id" not in st.session_state) or ("member_id" not in st.session_state)
 
 # 1) Preferred: device_sessions table keyed by device_token
-if ("active_group_id" not in st.session_state) or ("member_id" not in st.session_state):
+if needs_restore:
     try:
         session_res = (
             sb.table("device_sessions")
@@ -60,19 +64,25 @@ if ("active_group_id" not in st.session_state) or ("member_id" not in st.session
             st.session_state["member_id"] = member_id
             st.session_state["display_name"] = member_res[0]["display_name"]
 
-            # Touch last_seen_at
-            sb.table("device_sessions").update({"last_seen_at": "now()"}).eq(
-                "token", device_token
-            ).execute()
+            # Touch last_seen_at (best effort)
+            try:
+                sb.table("device_sessions").update({"last_seen_at": "now()"}).eq(
+                    "token", device_token
+                ).execute()
+            except Exception:
+                pass
 
-# 2) Fallback: whatever restore_login_if_possible does (only if still not set)
-if ("active_group_id" not in st.session_state) or ("member_id" not in st.session_state):
+# 2) Fallback: only if still not set
+needs_restore = ("active_group_id" not in st.session_state) or ("member_id" not in st.session_state)
+if needs_restore:
     try:
         restore_login_if_possible(sb)
     except Exception:
         pass
 
-# ---------- Sidebar identity ----------
+# ============================================================
+# SIDEBAR
+# ============================================================
 st.sidebar.markdown("## Welcome")
 
 if "active_group_id" in st.session_state:
@@ -103,50 +113,52 @@ else:
     st.sidebar.warning("No group selected yet")
     st.sidebar.caption("Go to Create or Join Group to start.")
 
-# ---------- Main content ----------
+# ============================================================
+# MAIN
+# ============================================================
 st.title("Welcome to Viscosity 🥃")
 st.caption("A private bourbon and whiskey discussion app for your crew.")
-
 st.divider()
 
-# Top-of-page status (matches the device_sessions behavior)
 if "active_group_id" in st.session_state:
     st.success(
-        f"You are in **{st.session_state['group_name']}** "
+        f"You are in **{st.session_state.get('group_name', 'Unknown')}** "
         f"as **{st.session_state.get('display_name', 'Member')}**."
     )
 else:
     st.info("Create or join a group to get started.")
 
-st.markdown(
-    """
-### What you can do
-- Create or join a group with a join code
-- Post when you're having a glass (with a scouting report)
-- Rate bottles 1–10 and leave notes
-- Upload bottle photos and audio notes
-- See rankings inside your group
-
-### Quick start
-1. Open **Create or Join Group**
-2. Create a group or enter a join code
-3. Go to **Home** and post your first pour
-"""
+card(
+    "What you can do",
+    "- Create or join a group with a join code<br>"
+    "- Post when you're having a glass (with a scouting report)<br>"
+    "- Rate bottles 1–10 and leave notes<br>"
+    "- Upload bottle photos and audio notes<br>"
+    "- See rankings inside your group",
 )
 
-st.divider()
+card(
+    "Quick start",
+    "1. Open <b>Create or Join Group</b><br>"
+    "2. Create a group or enter a join code<br>"
+    "3. Go to <b>Home</b> and post your first pour",
+)
 
 c1, c2 = st.columns(2)
 with c1:
-    st.markdown("### MVP rules")
-    st.write("- Join code only (no passwords yet)")
-    st.write("- Global bottle catalog")
-    st.write("- Group-scoped ratings, comments, events")
+    card(
+        "MVP rules",
+        "- Join code only (no passwords yet)<br>"
+        "- Global bottle catalog<br>"
+        "- Group-scoped ratings, comments, events",
+    )
 with c2:
-    st.markdown("### Coming soon")
-    st.write("- True login + private RLS")
-    st.write("- Reply threads in discussion")
-    st.write("- Push notifications")
+    card(
+        "Coming soon",
+        "- True login + private RLS<br>"
+        "- Reply threads in discussion<br>"
+        "- Push notifications",
+    )
 
-st.divider()
 st.caption("Built for friends. Weekend MVP.")
+
