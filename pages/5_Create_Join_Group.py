@@ -28,7 +28,7 @@ with tab1:
     st.subheader("Create a New Group")
 
     group_name = st.text_input("Group Name")
-    display_name = st.text_input("Your Display Name")
+    display_name = st.text_input("Your Display Name", key="create_display_name")
 
     if st.button("Create Group"):
         if not group_name.strip():
@@ -91,7 +91,7 @@ with tab2:
     st.subheader("Join Existing Group")
 
     join_code_input = st.text_input("Join Code")
-    display_name_join = st.text_input("Your Display Name")
+    display_name_join = st.text_input("Your Display Name", key="join_display_name")
 
     if st.button("Join Group"):
         if not join_code_input.strip():
